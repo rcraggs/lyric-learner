@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Lyric Memorizer Player</title>
+	<style>
+		body {
+			font-family: "Google Sans Flex", "Google Sans", "Helvetica Neue", sans-serif;
+			margin: 0;
+			padding: 0;
+			background: #f8fafc;
+			color: #1e293b;
+			user-select: none; /* Prevents text selection highlighting during fast screen taps */
+		}
+
+		/* Split Tap Overlay Controls */
+		.tap-zone-left, .tap-zone-right {
+			position: fixed;
+			top: 0;
+			bottom: 0;
+			width: 50%;
+			z-index: 10;
+			cursor: pointer;
+			display: flex;
+			align-items: flex-end;
+			padding: 2rem;
+			box-sizing: border-box;
+			opacity: 0.1;
+			transition: opacity 0.2s;
+			font-weight: bold;
+			font-size: 0.85rem;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+		}
+		.tap-zone-left {
+			left: 0;
+			justify-content: flex-start;
+			border-right: 1px dashed #cbd5e1;
+		}
+		.tap-zone-right {
+			right: 0;
+			justify-content: flex-end;
+		}
+		.tap-zone-left:hover, .tap-zone-right:hover {
+			opacity: 0.4;
+			background: linear-gradient(to top, #e2e8f0, transparent);
+		}
+
+		/* Core Layout Container */
+		.content-wrapper {
+			position: relative;
+			max-width: 650px;
+			margin: 4rem auto;
+			padding: 0 2rem 10rem 2rem;
+			z-index: 20;
+			pointer-events: none; /* Passes click interactions straight to structural zones underneath */
+		}
+
+		h1, h3 {
+			pointer-events: auto;
+		}
+
+		.lyric-item {
+			font-size: 1.35rem;
+			line-height: 1.4; /* Tighter spacing for multi-line sentences */
+			margin: 0.25rem 0; /* Significantly reduced vertical gap between adjacent lines */
+			padding: 0.35rem 0.5rem; /* Snugger text padding */
+			border-radius: 6px;
+			transition: all 0.25s ease;
+			min-height: 1.5rem;
+		}
+
+		/* State Styling Rules */
+		.type-static {
+			color: #64748b;
+			font-style: italic;
+			font-size: 1.1rem;
+			margin-top: 1rem; /* Keeps structural headings slightly separated from core lyrics */
+		}
+		
+		.type-note {
+			color: #0284c7;
+			font-weight: 500;
+			font-size: 1.1rem;
+		}
+
+		.hidden-content {
+			opacity: 0;
+		}
+
+		.hint-content {
+			opacity: 0.6;
+			color: #475569;
+			letter-spacing: 0.05em;
+		}
+
+		.revealed-content {
+			opacity: 1;
+		}
+
+		.item-container.active-step {
+			background-color: #f0f9ff;
+			box-shadow: 0 0 0 2px #bae6fd;
+		}
+	</style>
+</head>
+<body>
+
+	<!-- The Touch Interface Layout -->
+	<div class="tap-zone-left" id="left-zone">← Tap Left for Hint</div>
+	<div class="tap-zone-right" id="right-zone">Tap Right for Next →</div>
+
+	<!-- Lyric Viewport Frame -->
+	<div class="content-wrapper">
+		<h1 id="song-title">Loading Song...</h1>
+		<h3 id="song-artist" style="color: #64748b; font-weight: 400; margin-bottom: 3rem;"></h3>
+		
+		<div id="lyrics-engine-target"></div>
+	</div>
+
+	<script>
+		let elementsArray = []; 
+		let currentStepIndex = 0;
+
+		// Simple Markdown parser for bold text transformations
+		function formatMarkdown(text) {
+			return text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+		}
+
+		// Replaces alphanumeric letters with underscores while preserving words, syntax symbols, and bold tags
+		function generateHintText(text) {
+			let result = "";
+			let isNewWord = true;
+			
+			for (let i = 0; i < text.length; i++) {
+				let char = text[i];
+				if (/[a-zA-Z0-9]/.test(char)) {
+					if (isNewWord) {
+						result += char; // Keep the first letter of the word visible
+						isNewWord = false;
+					} else {
+						result += "_"; // Hide the rest of the letters
+					}
+				} else {
+					result += char; // Keep markdown formatting, spaces, and punctuation intact
+					if (char === " " || char === "-" || char === "—") {
+						isNewWord = true;
+					}
+				}
+			}
+			return result;
+		}
+
+		// Extract URL payload parameters
+		const urlParams = new URLSearchParams(window.location.search);
+		const songKey = urlParams.get('song') || 'amazing-grace';
+
+		// Request file context
+		fetch(`songs/${songKey}.txt`)
+			.then(res => {
+				if (!res.ok) throw new Error("File not found");
+				return res.text();
+			})
+			.then(rawText => {
+				parseAndBuildLyrics(rawText);
+			})
+			.catch(() => {
+				document.getElementById('song-title').textContent = "Song Text File Missing";
+			});
+
+		// Parsing Engine
+		function parseAndBuildLyrics(rawText) {
+			const allLines = rawText.replace(/\r\n/g, '\n').split('\n');
+			
+			let title = "Unknown Title";
+			let artist = "";
+			let lyricLinesStartIdx = 0;
+
+			// Extract leading text metadata
+			for (let i = 0; i < allLines.length; i++) {
+				const line = allLines[i].trim();
+				if (line.toLowerCase().startsWith('title:')) {
+					title = allLines[i].replace(/title:/i, '').trim();
+					lyricLinesStartIdx = i + 1;
+				} else if (line.toLowerCase().startsWith('artist:')) {
+					artist = allLines[i].replace(/artist:/i, '').trim();
+					lyricLinesStartIdx = i + 1;
+				} else if (line !== "") {
+					break; // Exit setup parsing loop when actual lyrics start
+				}
+			}
+
+			document.getElementById('song-title').textContent = title;
+			document.getElementById('song-artist').textContent = artist;
+
+			// Chunk data processing by split spaces (double newlines)
+			const contentBody = allLines.slice(lyricLinesStartIdx).join('\n').trim();
+			const chunks = contentBody.split(/\n\n+/);
+
+			const target = document.getElementById('lyrics-engine-target');
+			target.innerHTML = '';
+			elementsArray = [];
+
+			chunks.forEach(chunk => {
+				const trimmedChunk = chunk.trim();
+				if (!trimmedChunk) return;
+
+				const container = document.createElement('div');
+				container.className = 'item-container';
+
+				// Determine classification based on structural wrapper symbols
+				const isStatic = trimmedChunk.startsWith('[') && trimmedChunk.endsWith(']');
+				const isNote = trimmedChunk.startsWith('(') && trimmedChunk.endsWith(')');
+				
+				// Strip structural outer wrapping symbols if present
+				let cleanChunk = trimmedChunk;
+				if (isStatic || isNote) {
+					cleanChunk = trimmedChunk.slice(1, -1).trim();
+				}
+
+				const individualLines = cleanChunk.split('\n');
+				const linesReferences = [];
+				
+				let type = 'line';
+				if (isStatic) type = 'static';
+				else if (isNote) type = 'note';
+				else if (individualLines.length > 1) type = 'block';
+
+				individualLines.forEach(lineText => {
+					const cleanLine = lineText.trim();
+					if (!cleanLine) return;
+
+					const el = document.createElement('div');
+					// Everything starts hidden to prevent early visual disclosure
+					el.className = `lyric-item type-${type} hidden-content`;
+					
+					// Pre-calculate presentation states
+					const hintText = (type === 'note' || type === 'static') ? cleanLine : generateHintText(cleanLine);
+					el.innerHTML = formatMarkdown(hintText);
+					
+					container.appendChild(el);
+
+					linesReferences.push({
+						element: el,
+						fullText: cleanLine,
+						hintText: hintText
+					});
+				});
+
+				target.appendChild(container);
+
+				elementsArray.push({
+					type: type,
+					domContainer: container,
+					domLines: linesReferences
+				});
+			});
+
+			// Automatically reveal initial static headers or notes at the start of the song
+			checkCascade();
+		}
+
+		// Scans forward to automatically unmask non-lyric items sequentially
+		function checkCascade() {
+			while (currentStepIndex < elementsArray.length && 
+				  (elementsArray[currentStepIndex].type === 'static' || elementsArray[currentStepIndex].type === 'note')) {
+				
+				const currentItem = elementsArray[currentStepIndex];
+				currentItem.domLines.forEach(line => {
+					line.element.innerHTML = formatMarkdown(line.fullText);
+					line.element.className = `lyric-item type-${currentItem.type} revealed-content`;
+				});
+				
+				currentStepIndex++;
+				
+				if (currentItem.domContainer) {
+					currentItem.domContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+				}
+			}
+			updateActiveHighlight();
+		}
+
+		// UI Active State tracking focus
+		function updateActiveHighlight() {
+			elementsArray.forEach((item, idx) => {
+				if (idx === currentStepIndex) {
+					item.domContainer.classList.add('active-step');
+				} else {
+					item.domContainer.classList.remove('active-step');
+				}
+			});
+		}
+
+		// Advancing state action trigger
+		function handleAdvanceReveal() {
+			if (currentStepIndex >= elementsArray.length) return;
+
+			const currentItem = elementsArray[currentStepIndex];
+			
+			currentItem.domLines.forEach(line => {
+				line.element.innerHTML = formatMarkdown(line.fullText);
+				line.element.className = `lyric-item type-${currentItem.type === 'block' ? 'line' : currentItem.type} revealed-content`;
+			});
+
+			currentStepIndex++;
+			
+			// Auto-reveal subsequent structural items if they are notes or static titles
+			checkCascade();
+
+			// View window scrolling adaptation
+			if (currentItem.domContainer) {
+				currentItem.domContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			}
+		}
+
+		// First-letter hint action trigger
+		function handleHintReveal() {
+			if (currentStepIndex >= elementsArray.length) return;
+			
+			const currentItem = elementsArray[currentStepIndex];
+			if (currentItem.type === 'note' || currentItem.type === 'static') {
+				handleAdvanceReveal();
+				return;
+			}
+
+			currentItem.domLines.forEach(line => {
+				line.element.innerHTML = formatMarkdown(line.hintText);
+				line.element.className = 'lyric-item hint-content';
+			});
+		}
+
+		// Event Bindings
+		document.getElementById('left-zone').addEventListener('click', handleHintReveal);
+		document.getElementById('right-zone').addEventListener('click', handleAdvanceReveal);
+
+		window.addEventListener('keydown', (e) => {
+			if (e.code === 'Space' || e.code === 'ArrowRight') {
+				e.preventDefault();
+				handleAdvanceReveal();
+			} else if (e.code === 'ArrowLeft') {
+				e.preventDefault();
+				handleHintReveal();
+			}
+		});
+	</script>
+</body>
+</html>
